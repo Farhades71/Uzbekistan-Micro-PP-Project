@@ -1,0 +1,114 @@
+1:   FUNCTION_BLOCK "FB_ValveMotorControl_V10"
+2:   { S7_Optimized_Access := 'TRUE' }
+3:   VAR_INPUT
+4:       Raw_AI_Lux      : INT;      // 4–20 mA sensor
+5:       LS_Opened       : BOOL;     // Limit switch: Open
+6:       LS_Closed       : BOOL;     // Limit switch: Closed
+7:       Reset_Error     : BOOL;     // Physical reset button
+8:   END_VAR 
+9:  VAR_OUTPUT
+10:      Motor_Open      : BOOL;
+11:      Motor_Close     : BOOL;
+12:      LED_Green       : BOOL;     
+13:      LED_Yellow      : BOOL;     
+14:      LED_Red         : BOOL;     
+15:      Status_ID       : INT;      // 0:WAITING, 1:OPENING, 2:HOLDING, 3:CLOSING, 99:EMERGENCY
+16:  END_VAR
+17:  VAR
+18:      statLux         : REAL;
+19:      statDark        : BOOL;
+20:      statActive6h    : BOOL;
+21:      tmrConfirmDark  : TON;
+22:      tmr6hCycle      : TON;
+23:      tmrSafety       : TON;
+24:      tmrPause        : TON;      // Oscillator (pause)
+25:      tmrPulse        : TON;      // Oscillator (pulse)
+26:      inst_TrigReset  : R_TRIG;   // Rising edge detection for reset
+27:      // --- Debounce protection for LS_Opened ---
+28:      tmrLS_OpenedCheck   : TON;
+29:      LS_Opened_confirmed : BOOL;
+30:  END_VAR
+31:  VAR_CONST
+32:      LU_MIN_RAW      : INT  := 5530;     // 4 mA
+33:      LU_MAX_RAW      : INT  := 27648;    // 20 mA
+34:      LU_BREAK_LIMIT  : INT  := 5000;     // Break threshold (~3.6 mA)
+35:  END_VAR
+36:  BEGIN
+37.  // 1. HARD FAULT DIAGNOSTICS
+38:      IF #Raw_AI_Lux < #LU_BREAK_LIMIT THEN
+39:          #statActive6h := FALSE;
+40:          #Status_ID := 99;
+41:      END_IF;
+42:      IF #LS_Opened AND #LS_Closed THEN
+43:          #statActive6h := FALSE;
+44:          #Status_ID := 99;
+45:      END_IF;
+46:      #inst_TrigReset(CLK := #Reset_Error);
+47:      IF #inst_TrigReset.Q THEN   
+48:          #statActive6h := FALSE;
+49:          #Status_ID := 0;
+50:          // tmrConfirmDark will restart automatically in state 0
+51:      END_IF;
+52:      // 2. DATA PROCESSING
+53:      #statLux := SCALE_X(MIN := 0.0, MAX := 1000.0,
+54:                          VALUE := NORM_X(MIN := #LU_MIN_RAW, MAX := #LU_MAX_RAW, VALUE := #Raw_AI_Lux));      
+55:      IF #statLux < 0.0 THEN #statLux := 0.0; 
+56:      ELSIF #statLux > 1000.0 THEN #statLux := 1000.0; 
+57:      END_IF;
+58:      IF #statLux < 100.0 THEN #statDark := TRUE;
+59:      ELSIF #statLux > 150.0 THEN #statDark := FALSE;
+60:      END_IF;
+61:      // Confirm darkness timer, only active in WAITING state
+62:      #tmrConfirmDark(IN := #statDark AND (#Status_ID = 0), PT := T#5M);  
+63:      // 3. STATE MACHINE
+64:      CASE #Status_ID OF
+65:          0:  // WAITING FOR DARKNESS
+66:              IF #tmrConfirmDark.Q AND NOT #statActive6h THEN
+67:                  #statActive6h := TRUE;
+68:                  #Status_ID := 1;
+69:              END_IF;
+70:          1:  // OPENING
+71:              IF #LS_Opened THEN
+72:                  #Status_ID := 2;
+73:              ELSIF #tmrSafety.Q THEN
+74:                  #Status_ID := 99;
+75:              END_IF;
+76:          2:  // HOLDING (6 hours)
+77:              IF #tmr6hCycle.Q THEN
+78:                  #Status_ID := 3;
+79:              END_IF;
+80:              // --- Valve check with debounce protection ---
+81:              #tmrLS_OpenedCheck(IN := NOT #LS_Opened AND #Status_ID = 2, PT := T#2S);
+82:              #LS_Opened_confirmed := #tmrLS_OpenedCheck.Q;
+83:             IF #LS_Opened_confirmed THEN
+84:                 #Status_ID := 1;
+85:             END_IF;
+86:         3:  // CLOSING
+87:             IF #LS_Closed THEN
+88:                 #statActive6h := FALSE;
+89:                 #Status_ID := 0;
+90:             ELSIF #tmrSafety.Q THEN
+91:                 #Status_ID := 99;
+92:             END_IF;
+93:         99: // EMERGENCY
+94:             ; 
+95:     END_CASE;
+96:     // 4. MOTOR CONTROL
+97:     IF #Status_ID = 99 THEN
+98:         #Motor_Open := FALSE;
+99:         #Motor_Close := FALSE;
+100:     ELSE
+101:         #Motor_Open  := (#Status_ID = 1);
+102:         #Motor_Close := (#Status_ID = 3);
+103:     END_IF;
+104:     #tmr6hCycle(IN := #statActive6h, PT := T#6H);
+105:     #tmrSafety(IN := (#Status_ID = 1 OR #Status_ID = 3) AND NOT #LS_Opened AND NOT #LS_Closed, PT := T#45S);
+106:     // 5. INDICATION
+107:     #LED_Green  := (#Status_ID = 0);
+108:     #LED_Yellow := (#Status_ID >= 1 AND #Status_ID <= 3);
+109:     // 1 Hz oscillator for blinking red LED
+110:     #tmrPause(IN := NOT #tmrPulse.Q, PT := T#500MS);
+111:     #tmrPulse(IN := #tmrPause.Q, PT := T#500MS);
+112:     #LED_Red := (#Status_ID = 99) AND #tmrPulse.Q;
+113: END_FUNCTION_BLOCK
+
