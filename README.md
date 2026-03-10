@@ -8,4 +8,4 @@ Control algorithm (SCL) for an automated gate system of a 10 kW micro hydropower
 ## Citation
 
 If you use these materials in your research, please cite:
-* *Makhmudov, F., et al. (2026). Analysis of a 10 kW mini pumped hydro storage plant with solar integration in Uzbekistan. Zenodo. DOI: [Ваш DOI]*
+* *Makhmudov, F., et al. (2026). Analysis of a 10 kW mini pumped hydro storage plant with solar integration in Uzbekistan. Zenodo. DOI: 10.5281/zenodo.18917148
